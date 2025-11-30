@@ -165,9 +165,9 @@ class PosePublisher(Node):
 
         self.camera_publisher.publish(msg)
 
-    def publish_tag(self, se3, id):
-        if(id in self.april_tags):
-            publisher = self.april_tags[id]["publisher"]
+    def publish_tag(self, se3, tag_id):
+        if(tag_id in self.april_tags):
+            publisher = self.april_tags[tag_id]["publisher"]
             print("Got publisher")
 
             msg = self.make_pose_msg(se3)
