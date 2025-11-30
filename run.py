@@ -6,7 +6,7 @@ from apriltag import apriltag
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
-from tf_transformations import quaternion_from_matrix, translation_from_matrix
+from tf_transformations import quaternion_from_matrix, translation_from_matrix, euler_matrix
 
 from geometry_msgs.msg import PoseStamped
 
@@ -16,8 +16,9 @@ FPS = 30.0
 
 FIDUCIAL_MARKER_SIZE = 0.0872 #m
 
+#draw axis on tag
 def draw(img, corners, imgpts):
-    placement = (corners[0] + corners[2])/2
+    placement = (corners[0] + corners[2])/2 #take diagonal corners and find center (left bottom and right top)
     corner = tuple(placement.ravel().astype("int32"))
     imgpts = imgpts.astype("int32")
     img = cv2.line(img, corner, tuple(imgpts[0].ravel()), (255,0,0), 2) #B - x
@@ -29,9 +30,9 @@ class PosePublisher(Node):
 
     def __init__(self):
         super().__init__('Pose_Publisher')
-        self.publisher_ = self.create_publisher(PoseStamped, 'tag_pose', 10)
+        self.tag_publishers = {}
      
-        cap = cv2.VideoCapture(4)
+        cap = cv2.VideoCapture(0)
 
         cap.set(cv2.CAP_PROP_FPS, FPS)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
@@ -52,8 +53,6 @@ class PosePublisher(Node):
 
         num_frames = 0
         start_time = time.time()
-        last_run_time = 0
-
 
         objp = np.zeros((4,3), np.float32)
 
@@ -73,15 +72,14 @@ class PosePublisher(Node):
 
             ret, frame = cap.read()
 
-            h,  w = frame.shape[:2]
-            newcameramtx, roi = cv2.getOptimalNewCameraMatrix(intrinsics, dist, (w,h), 1, (w,h))
-            undistorted_image = cv2.undistort(frame, intrinsics, dist, None, newcameramtx)
-
-            x, y, w, h = roi
+            # h,  w = frame.shape[:2]
+            # newcameramtx, roi = cv2.getOptimalNewCameraMatrix(intrinsics, dist, (w,h), 1, (w,h))
+            # undistorted_image = cv2.undistort(frame, intrinsics, dist, None, newcameramtx)
+            # x, y, w, h = roi
             # undistorted_image_grey = cv2.cvtColor(undistorted_image, cv2.COLOR_BGR2GRAY)
-            undistorted_image = cv2.undistort(frame, intrinsics, dist, None, newcameramtx)
-            undistorted_image = undistorted_image[y:y+h, x:x+w]
-            undistorted_image_grey = cv2.cvtColor(undistorted_image, cv2.COLOR_BGR2GRAY)
+            # undistorted_image = cv2.undistort(frame, intrinsics, dist, None, newcameramtx)
+            # undistorted_image = undistorted_image[y:y+h, x:x+w]
+            # undistorted_image_grey = cv2.cvtColor(undistorted_image, cv2.COLOR_BGR2GRAY)
 
             image_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -89,57 +87,58 @@ class PosePublisher(Node):
 
             for i in range(len(detections)):
                 print(detections[i])
-                #Lots of false positives 
+                tag_id = detections[i]["id"]
                 corners = np.reshape(np.array([detections[i]["lb-rb-rt-lt"]]), (4,1,2)).astype(np.int32)
+                cv2.drawContours(frame, (corners,), -1, (0, 255, 0), 3) #bouding box
 
-                corner_detections = detections[i]["lb-rb-rt-lt"]
+                corner_detections = np.array(detections[i]["lb-rb-rt-lt"], dtype=np.float32)
 
-                # cv2.drawContours(frame, (corners,), -1, (0, 255, 0), 3)
                 
-                tag_ret,rvecs, tvecs = cv2.solvePnP(objp, corner_detections,intrinsics, dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
-                imgpts, jac = cv2.projectPoints(axis, rvecs, tvecs, intrinsics,dist)
-                img = draw(frame,corner_detections,imgpts)
-                cv2.imshow('img',img)
+                _, rvecs, tvecs = cv2.solvePnP(objp, corner_detections,intrinsics, dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+                imgpts, _ = cv2.projectPoints(axis, rvecs, tvecs, intrinsics,dist)
+                draw(frame,corner_detections,imgpts)
 
+                # print(f"Rvecs: {rvecs}")
+                # print(f"tvecs: {tvecs}")
 
-                print(f"Rvecs: {rvecs}")
-                print(f"tvecs: {tvecs}")
-
-                tag_rotation_matrix, _ = cv2.Rodrigues(rvecs) #returns rotation amtrix, and jacobian(unused)
-                print(f"Rotation matrix: {tag_rotation_matrix}")
+                tag_rotation_matrix, _ = cv2.Rodrigues(rvecs) #returns rotation 3x3 amtrix, and jacobian(unused)
+                # print(f"Rotation matrix: {tag_rotation_matrix}")
                 
-                # object_to_camera_se3= np.eye(4)
-                # object_to_camera_se3[:3,:3] = tag_rotation_matrix
-                # object_to_camera_se3[:3,3:] = tvecs
-                #
-                # camera_to_object_se3 = np.linalg.inv(object_to_camera_se3)
-                #
-                # theta = -math.pi/2  # -90 degrees (clockwise viewed from +Z)
-                # R_w_o = np.array([
-                #     [math.cos(theta), -math.sin(theta), 0.0],
-                #     [math.sin(theta),  math.cos(theta), 0.0],
-                #     [0.0,              0.0,             1.0]
-                # ])
-                #
-                # T_wo = np.eye(4)
-                # T_wo[:3,:3] = R_w_o
-                # T_wo[:3,3]  = np.array([0.0, 0.4, 0.0])
-                #
-                # camera_in_world_se3 = T_wo@camera_to_object_se3
-                #
-                # print(f"o->t se3: \n {object_to_camera_se3}")
-                # print(20*"-")
-                #
-                # self.publish(camera_in_world_se3)
+                tag_in_cam_frame_se3= np.eye(4)
+                tag_in_cam_frame_se3[:3,:3] = tag_rotation_matrix
+                tag_in_cam_frame_se3[:3,3:] = tvecs
 
+                cam_in_tag_frame_se3 = np.eye(4)
+                cam_in_tag_frame_se3[:3, :3] = tag_rotation_matrix.T 
+                cam_in_tag_frame_se3[:3, 3:] = -tag_rotation_matrix.T @ tvecs
+
+                # tag_in_world_frame_se3 = np.eye(4)
+                # r, p, y = -math.pi/2, 0.0, 0.0
+                # T = euler_matrix(r, p, y)
+                # R = T[0:3, 0:3]
+                # tag_in_world_frame_se3[:3,:3] = R
+                # tag_in_world_frame_se3[:3,3:] = np.vstack(np.array([-0.4,0.0,0.0]))
+                #
+
+                R = np.array([
+                    [0,  0, 1],
+                    [-1,  0,  0],
+                    [0, -1,  0]
+                ], dtype=float)
+
+                tag_in_world_se3 = np.eye(4)
+                tag_in_world_se3[:3, :3] = R
+                tag_in_world_se3[:3, 3] = np.array([0.4, 0.0, 0.0])  # set z here if needed
+
+                cam_in_world_frame_se3 = tag_in_world_se3 @ cam_in_tag_frame_se3
+                print(cam_in_world_frame_se3)
+
+                self.publish_tag(cam_in_world_frame_se3, tag_id)
 
             if not ret:
                 print("Can't receive frame (stream end?). Exiting ...")
                 break
             cv2.imshow("Output", frame)
-            undistorted_image = cv2.resize(undistorted_image, (640,480), dst=None, fx=None, fy=None, interpolation=cv2.INTER_LINEAR)
-            cv2.imshow("Output-undistorted-greyscale", undistorted_image_grey)
-            cv2.imshow("Output-undistorted", undistorted_image)
             if cv2.waitKey(1) == ord('q'):
                 break
 
@@ -149,8 +148,17 @@ class PosePublisher(Node):
         cv2.destroyAllWindows()
 
 
-    def publish(self, se3):
-        #todo: Fix this it is not roll pitch and yaw but rather Rodrigues rotation vector
+    def publish_tag(self, se3, id):
+        publisher = None
+        print(id)
+        if(id in self.tag_publishers):
+            publisher = self.tag_publishers[id]
+            print("Got publisher")
+        else:
+            self.tag_publishers[id] = self.create_publisher(PoseStamped, f'tag_{id}_pose', 10)
+            publisher = self.tag_publishers[id]
+            print("Created")
+
         quat = quaternion_from_matrix(se3)
         translation = translation_from_matrix(se3)
 
@@ -172,7 +180,8 @@ class PosePublisher(Node):
         pose.orientation.z = quat[2]
         pose.orientation.w = quat[3]
 
-        self.publisher_.publish(msg)
+        publisher.publish(msg)
+
         
 
 
