@@ -1,4 +1,5 @@
 import time
+import yaml
 import math
 import numpy as np
 import cv2
@@ -6,7 +7,9 @@ from apriltag import apriltag
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
-from tf_transformations import quaternion_from_matrix, translation_from_matrix, euler_matrix
+from tf_transformations import quaternion_from_matrix, translation_from_matrix, euler_matrix, quaternion_matrix
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
 
 from geometry_msgs.msg import PoseStamped
 
@@ -30,7 +33,12 @@ class PosePublisher(Node):
 
     def __init__(self):
         super().__init__('Pose_Publisher')
-        self.tag_publishers = {}
+        self.april_tags = {}
+        self.setup_tags()
+        print(self.april_tags)
+        self.map_boundary_publisher = self.create_publisher(Marker, "boundary_marker", 10)
+        self.camera_publisher = self.create_publisher(PoseStamped, f'camera_pose', 10) #create publisher for tag id
+
      
         cap = cv2.VideoCapture(0)
 
@@ -65,6 +73,7 @@ class PosePublisher(Node):
 
         detector = apriltag("tagStandard41h12")
         while True:
+            self.publish_map_boundaries()
             num_frames += 1
 
             if num_frames % FPS == 0:
@@ -112,28 +121,22 @@ class PosePublisher(Node):
                 cam_in_tag_frame_se3[:3, :3] = tag_rotation_matrix.T 
                 cam_in_tag_frame_se3[:3, 3:] = -tag_rotation_matrix.T @ tvecs
 
-                # tag_in_world_frame_se3 = np.eye(4)
-                # r, p, y = -math.pi/2, 0.0, 0.0
-                # T = euler_matrix(r, p, y)
-                # R = T[0:3, 0:3]
-                # tag_in_world_frame_se3[:3,:3] = R
-                # tag_in_world_frame_se3[:3,3:] = np.vstack(np.array([-0.4,0.0,0.0]))
-                #
 
-                R = np.array([
-                    [0,  0, 1],
-                    [-1,  0,  0],
-                    [0, -1,  0]
-                ], dtype=float)
+                tag_pos = np.array(self.april_tags[tag_id]["position"])
+                tag_quat = quaternion_matrix(self.april_tags[tag_id]["orientation"])
+
 
                 tag_in_world_se3 = np.eye(4)
-                tag_in_world_se3[:3, :3] = R
-                tag_in_world_se3[:3, 3] = np.array([0.4, 0.0, 0.0])  # set z here if needed
+                tag_in_world_se3[:3, :3] = tag_quat[:3, :3]
+                tag_in_world_se3[:3, 3] = tag_pos
+
+
 
                 cam_in_world_frame_se3 = tag_in_world_se3 @ cam_in_tag_frame_se3
                 print(cam_in_world_frame_se3)
 
-                self.publish_tag(cam_in_world_frame_se3, tag_id)
+                self.publish_tag(tag_in_world_se3, tag_id)
+                self.publish_camera(cam_in_world_frame_se3)
 
             if not ret:
                 print("Can't receive frame (stream end?). Exiting ...")
@@ -148,39 +151,82 @@ class PosePublisher(Node):
         cv2.destroyAllWindows()
 
 
+    def setup_tags(self):
+        with open("tags.yaml", "r") as f:
+            cfg = yaml.safe_load(f)
+
+        for tag_info in cfg["tags"]:
+            tag_info["publisher"] = self.create_publisher(PoseStamped, f'tag_{tag_info["id"]}_pose', 10) #create publisher for tag id
+            self.april_tags[tag_info["id"]] = tag_info
+
+
+    def publish_camera(self,se3):
+        msg = self.make_pose_msg(se3)
+
+        self.camera_publisher.publish(msg)
+
     def publish_tag(self, se3, id):
-        publisher = None
-        print(id)
-        if(id in self.tag_publishers):
-            publisher = self.tag_publishers[id]
+        if(id in self.april_tags):
+            publisher = self.april_tags[id]["publisher"]
             print("Got publisher")
+
+            msg = self.make_pose_msg(se3)
+            publisher.publish(msg)
         else:
-            self.tag_publishers[id] = self.create_publisher(PoseStamped, f'tag_{id}_pose', 10)
-            publisher = self.tag_publishers[id]
-            print("Created")
+            print("Tag not in dict, did you forget to add to yaml?")
 
-        quat = quaternion_from_matrix(se3)
-        translation = translation_from_matrix(se3)
+    def make_pose_msg(self, se3):
+            quat = quaternion_from_matrix(se3)
+            translation = translation_from_matrix(se3)
 
-        x = translation[0] 
-        y = translation[1]
-        z = translation[2]
+            x = translation[0] 
+            y = translation[1]
+            z = translation[2]
 
-        msg = PoseStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "map"  
-        pose = msg.pose
+            msg = PoseStamped()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "map"  
+            pose = msg.pose
 
-        pose.position.x = x
-        pose.position.y = y
-        pose.position.z = z
+            pose.position.x = x
+            pose.position.y = y
+            pose.position.z = z
 
-        pose.orientation.x = quat[0]
-        pose.orientation.y = quat[1]
-        pose.orientation.z = quat[2]
-        pose.orientation.w = quat[3]
+            pose.orientation.x = quat[0]
+            pose.orientation.y = quat[1]
+            pose.orientation.z = quat[2]
+            pose.orientation.w = quat[3]
+            return msg
 
-        publisher.publish(msg)
+
+    def publish_map_boundaries(self):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+
+        marker.scale.x = 0.02  # line thickness
+
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+
+        #my rooom in meters (3 corners)
+        points = [
+            (0.0, 0.0),
+            (-3.3, 0.0),
+            (-3.3, 3.3),
+        ]
+
+        for px, py in points:
+            p = Point()
+            p.x = px
+            p.y = py
+            p.z = 0.0
+            marker.points.append(p)
+
+        self.map_boundary_publisher.publish(marker)
 
         
 
