@@ -17,7 +17,8 @@ FPS = 30.0
 FIDUCIAL_MARKER_SIZE = 0.0872 #m
 
 def draw(img, corners, imgpts):
-    corner = tuple(corners[0].ravel().astype("int32"))
+    placement = (corners[0] + corners[2])/2
+    corner = tuple(placement.ravel().astype("int32"))
     imgpts = imgpts.astype("int32")
     img = cv2.line(img, corner, tuple(imgpts[0].ravel()), (255,0,0), 2) #B - x
     img = cv2.line(img, corner, tuple(imgpts[1].ravel()), (0,255,0), 2) #G - y
@@ -61,6 +62,8 @@ class PosePublisher(Node):
         objp[2] = [FIDUCIAL_MARKER_SIZE/2, -FIDUCIAL_MARKER_SIZE/2, 0] #right top
         objp[3] = [-FIDUCIAL_MARKER_SIZE/2, -FIDUCIAL_MARKER_SIZE/2, 0] #left top
 
+        axis = np.float32([[FIDUCIAL_MARKER_SIZE/2,0,0], [0,-FIDUCIAL_MARKER_SIZE/2,0], [0,0,-FIDUCIAL_MARKER_SIZE/2]]).reshape(-1,3)
+
         detector = apriltag("tagStandard41h12")
         while True:
             num_frames += 1
@@ -85,6 +88,7 @@ class PosePublisher(Node):
             detections = detector.detect(image_gray)
 
             for i in range(len(detections)):
+                print(detections[i])
                 #Lots of false positives 
                 corners = np.reshape(np.array([detections[i]["lb-rb-rt-lt"]]), (4,1,2)).astype(np.int32)
 
@@ -93,7 +97,7 @@ class PosePublisher(Node):
                 # cv2.drawContours(frame, (corners,), -1, (0, 255, 0), 3)
                 
                 tag_ret,rvecs, tvecs = cv2.solvePnP(objp, corner_detections,intrinsics, dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
-                imgpts, jac = cv2.projectPoints(objp, rvecs, tvecs, intrinsics,dist)
+                imgpts, jac = cv2.projectPoints(axis, rvecs, tvecs, intrinsics,dist)
                 img = draw(frame,corner_detections,imgpts)
                 cv2.imshow('img',img)
 
