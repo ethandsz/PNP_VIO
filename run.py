@@ -7,7 +7,7 @@ from apriltag import apriltag
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
-from tf_transformations import quaternion_from_matrix, translation_from_matrix, euler_matrix, quaternion_matrix
+from tf_transformations import quaternion_from_matrix, translation_from_matrix, euler_matrix, quaternion_matrix, euler_from_matrix, quaternion_from_euler
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point
 
@@ -38,6 +38,22 @@ class PosePublisher(Node):
         print(self.april_tags)
         self.map_boundary_publisher = self.create_publisher(Marker, "boundary_marker", 10)
         self.camera_publisher = self.create_publisher(PoseStamped, f'camera_pose', 10) #create publisher for tag id
+        self.camera_estimate_publisher = self.create_publisher(PoseStamped, f'camera_estimate', 10) #create publisher for tag id
+
+        self.P = np.eye(12)
+        self.Q = np.eye(12) * 0.001
+
+        sigma_px = 0.01   # meters
+        sigma_py = 0.01
+        sigma_pz = 0.01
+        sigma_theta = 0.005  # radians
+        sigma_phi   = 0.005
+        sigma_psi   = 0.005
+
+        self.R = np.diag([sigma_px**2, sigma_py**2, sigma_pz**2,
+                     sigma_theta**2, sigma_phi**2, sigma_psi**2])
+
+        self.state = np.array([0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,]) #px. py. pz. vx. vy. vz. theta. phi. psi. wx. wy. wz
 
      
         cap = cv2.VideoCapture(0)
@@ -60,7 +76,6 @@ class PosePublisher(Node):
         print(f"fps: {cap.get(cv2.CAP_PROP_FPS)}")
 
         num_frames = 0
-        start_time = time.time()
 
         objp = np.zeros((4,3), np.float32)
 
@@ -73,6 +88,7 @@ class PosePublisher(Node):
 
         detector = apriltag("tagStandard41h12")
         while True:
+            start_time = time.time()
             self.publish_map_boundaries()
             num_frames += 1
 
@@ -92,10 +108,42 @@ class PosePublisher(Node):
 
             image_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+
+            dt = time.time() - start_time
+
+            x_pred = self.state[0] + self.state[3] * dt
+            y_pred = self.state[1] + self.state[4] * dt
+            z_pred = self.state[2] + self.state[5] * dt
+
+            theta_pred = self.state[6] + self.state[9] * dt
+            phi_pred = self.state[7] + self.state[10] * dt
+            psi_pred = self.state[8] + self.state[11] * dt
+
+            self.state[0] = x_pred
+            self.state[1] = y_pred
+            self.state[2] = z_pred
+
+            self.state[6] = theta_pred
+            self.state[7] = phi_pred
+            self.state[8] = psi_pred
+
+
+            A = np.eye(12)
+
+            A[0,3] = dt
+            A[1,4] = dt
+            A[2,5] = dt
+            A[6,9] = dt
+            A[7,10] = dt
+            A[8,11] = dt
+
+            self.P = self.P + dt * (A @ self.P + self.P @ A.T + self.Q);
+
+
+
             detections = detector.detect(image_gray)
 
             for i in range(len(detections)):
-                print(detections[i])
                 tag_id = detections[i]["id"]
                 corners = np.reshape(np.array([detections[i]["lb-rb-rt-lt"]]), (4,1,2)).astype(np.int32)
                 cv2.drawContours(frame, (corners,), -1, (0, 255, 0), 3) #bouding box
@@ -133,10 +181,52 @@ class PosePublisher(Node):
 
 
                 cam_in_world_frame_se3 = tag_in_world_se3 @ cam_in_tag_frame_se3
-                print(cam_in_world_frame_se3)
 
                 self.publish_tag(tag_in_world_se3, tag_id)
                 self.publish_camera(cam_in_world_frame_se3)
+
+                camera_position = translation_from_matrix(cam_in_world_frame_se3)
+                camera_orientation = euler_from_matrix(cam_in_world_frame_se3)
+                
+                x_cam = camera_position[0]
+                y_cam = camera_position[1]
+                z_cam = camera_position[2]
+
+                theta_cam = camera_orientation[0]
+                phi_cam = camera_orientation[1]
+                psi_cam = camera_orientation[2]
+
+                # print(camera_position)
+                # print(camera_orientation)
+
+                C = np.zeros((6,12))
+                C[0,0] = 1
+                C[1,1] = 1
+                C[2,2] = 1
+
+                C[3,6] = 1
+                C[4,7] = 1
+                C[5,8] = 1
+
+
+                S = C @ self.P @ C.T + self.R;
+                
+                K = self.P @ C.T @ np.linalg.inv(S);
+
+                self.P = (np.eye(12) - K @ C) @ self.P
+
+                z = np.array([x_cam, y_cam, z_cam, theta_cam, phi_cam, psi_cam])
+                y = z - C @ self.state
+
+
+                self.state = self.state + K @ y
+                self.state[3:6] = (z[0:3] - self.state[0:3]) / dt  # vx,vy,vz
+                self.state[9:] = (z[3:6] - self.state[6:9]) / dt
+
+
+            print(self.state)
+            self.publish_state_estimate(self.state)
+            print(20*"-")
 
             if not ret:
                 print("Can't receive frame (stream end?). Exiting ...")
@@ -145,7 +235,6 @@ class PosePublisher(Node):
             if cv2.waitKey(1) == ord('q'):
                 break
 
-        print(f"num frames {num_frames} seconds {time.time() - start_time}")
 # When everything done, release the capture
         cap.release()
         cv2.destroyAllWindows()
@@ -159,6 +248,25 @@ class PosePublisher(Node):
             tag_info["publisher"] = self.create_publisher(PoseStamped, f'tag_{tag_info["id"]}_pose', 10) #create publisher for tag id
             self.april_tags[tag_info["id"]] = tag_info
 
+    def publish_state_estimate(self, state):
+            msg = PoseStamped()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "map"  
+            pose = msg.pose
+
+            quat = quaternion_from_euler(state[6], state[7], state[8])
+            pose.position.x = state[0]
+            pose.position.y = state[1]
+            pose.position.z = state[2]
+
+            pose.orientation.x = quat[0]
+            pose.orientation.y = quat[1]
+            pose.orientation.z = quat[2]
+            pose.orientation.w = quat[3]
+
+            self.camera_estimate_publisher.publish(msg)
+
+       
 
     def publish_camera(self,se3):
         msg = self.make_pose_msg(se3)
