@@ -26,3 +26,6 @@ This repository provides a basic framework to compute camera pose in a world fra
 3. **Run pose estimation**  
    - Use `run.py` as an entry point. The script reads camera frames, runs fiducial detection, and computes pose via PnP.  
    - Visualize the pose in real-time using the provided `rviz_config.rviz` using rviz2.  
+
+
+![alt text](assets/RVIZ_output.png "RVIZ Output")
