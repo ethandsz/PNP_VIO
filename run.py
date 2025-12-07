@@ -24,9 +24,9 @@ def draw(img, corners, imgpts):
     placement = (corners[0] + corners[2])/2 #take diagonal corners and find center (left bottom and right top)
     corner = tuple(placement.ravel().astype("int32"))
     imgpts = imgpts.astype("int32")
-    img = cv2.line(img, corner, tuple(imgpts[0].ravel()), (255,0,0), 2) #B - x
+    img = cv2.line(img, corner, tuple(imgpts[0].ravel()), (0,0,255), 2) #R - x
     img = cv2.line(img, corner, tuple(imgpts[1].ravel()), (0,255,0), 2) #G - y
-    img = cv2.line(img, corner, tuple(imgpts[2].ravel()), (0,0,255), 2) #R - z
+    img = cv2.line(img, corner, tuple(imgpts[2].ravel()), (255,0,0), 2) #B - z
     return img
 
 class PosePublisher(Node):
@@ -84,7 +84,7 @@ class PosePublisher(Node):
         objp[2] = [FIDUCIAL_MARKER_SIZE/2, -FIDUCIAL_MARKER_SIZE/2, 0] #right top
         objp[3] = [-FIDUCIAL_MARKER_SIZE/2, -FIDUCIAL_MARKER_SIZE/2, 0] #left top
 
-        axis = np.float32([[FIDUCIAL_MARKER_SIZE/2,0,0], [0,-FIDUCIAL_MARKER_SIZE/2,0], [0,0,-FIDUCIAL_MARKER_SIZE/2]]).reshape(-1,3)
+        axis = np.float32([[FIDUCIAL_MARKER_SIZE/2,0,0], [0,FIDUCIAL_MARKER_SIZE/2,0], [0,0,FIDUCIAL_MARKER_SIZE/2]]).reshape(-1,3)
 
         detector = apriltag("tagStandard41h12")
         while True:
