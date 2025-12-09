@@ -29,3 +29,9 @@ This repository provides a basic framework to compute camera pose in a world fra
 
 
 ![alt text](assets/RVIZ_output.png "RVIZ Output")
+
+## 3D Printable Models
+3D printable models are available in the `3D_models` directory. The current platform supports the Arducam 5MP Wide Angle USB Camera, an Elegoo UNO R3, and the GY-521 module. 
+
+
+![alt text](assets/VIO_Platform.png "RVIZ Output")
